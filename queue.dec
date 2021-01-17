@@ -1,0 +1,43 @@
+#ifndef PREFIX_
+#error "PREFIX_ not defined"
+#endif
+#ifndef TYPE_
+#error "TYPE_ not defined"
+#endif
+
+#include "cacti.h"
+#include <stdlib.h>
+#include <stdbool.h>
+#include <pthread.h>
+
+// https://stackoverflow.com/a/7186396
+
+#define CONCAT_(a, b) a##b
+#define CONCAT(a, b) CONCAT_(a, b)
+
+#define QUEUE_TYPE_ CONCAT(PREFIX_, _queue_t)
+
+/* Message act_queue struct & operations */
+typedef struct {
+    size_t size, capacity, beg, end, max_size;
+    TYPE_ *buffer;
+    pthread_mutex_t mutex;
+} QUEUE_TYPE_;
+
+int CONCAT(PREFIX_, _queue_init)(QUEUE_TYPE_ *const q, size_t max_size);
+
+static inline void CONCAT(PREFIX_, _queue_destroy)(QUEUE_TYPE_ *const q) {
+    free(q->buffer);
+}
+
+static inline bool CONCAT(PREFIX_, _queue_is_empty)(QUEUE_TYPE_ *const q) {
+    return q->size == 0;
+}
+
+static inline bool CONCAT(PREFIX_, _queue_is_full)(QUEUE_TYPE_ *const q) {
+    return q->size == q->max_size;
+}
+
+int CONCAT(PREFIX_, _queue_push)(QUEUE_TYPE_ *const q, TYPE_ elem);
+
+int CONCAT(PREFIX_, _queue_pull)(QUEUE_TYPE_ *const q, TYPE_ *const elem);
