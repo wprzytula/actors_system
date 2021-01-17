@@ -17,7 +17,7 @@ int main() {
     act_t temp[2] = {one, two};
     memcpy(role->prompts, temp, 2);
     actor_system_create(&actor_id, role);
-    send_message(actor_id, (message_t){.message_type = MSG_HELLO});
+    send_message(actor_id, (message_t){.message_type = MSG_GODIE});
     actor_system_join(actor_id);
 
     free(role->prompts);

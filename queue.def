@@ -1,6 +1,4 @@
-#include <pthread.h>
 #include <string.h>
-#include "err.h"
 #include "queue.dec"
 
 #define SHRINK_FACTOR 4
@@ -18,10 +16,7 @@ int CONCAT(PREFIX_, _queue_init)(QUEUE_TYPE_ *const q, size_t max_size) {
 }
 
 int CONCAT(PREFIX_, _queue_push)(QUEUE_TYPE_ *const q, TYPE_ elem) {
-    int err;
-    verify(pthread_mutex_lock(&q->mutex), "mutex unlock failed");
-    if (q->size == ACTOR_QUEUE_LIMIT) {
-        verify(pthread_mutex_unlock(&q->mutex), "mutex unlock failed");
+    if (q->size == q->max_size) {
         return -2;
     }
     if (q->size == q->capacity) {
@@ -45,19 +40,14 @@ int CONCAT(PREFIX_, _queue_push)(QUEUE_TYPE_ *const q, TYPE_ elem) {
     q->buffer[q->end] = elem;
     q->end = (q->end + 1 % q->capacity);
     ++q->size;
-    verify(pthread_mutex_unlock(&q->mutex), "mutex unlock failed");
     return 0;
 }
 
-int CONCAT(PREFIX_, _queue_pull)(QUEUE_TYPE_ *const q, TYPE_ *const elem) {
-    int err;
-    verify(pthread_mutex_lock(&q->mutex), "mutex unlock failed");
-    if (q->size == 0) {
-        verify(pthread_mutex_unlock(&q->mutex), "mutex unlock failed");
-        return -2;
-    }
+TYPE_ CONCAT(PREFIX_, _queue_pop)(QUEUE_TYPE_ *const q) {
+    if (CONCAT(PREFIX_, _queue_is_empty)(q))
+        exit(1);
 
-    *elem = q->buffer[q->beg];
+    TYPE_ elem = q->buffer[q->beg];
     q->beg = (q->beg + 1 % q->capacity);
     --q->size;
     if (q->size * SHRINK_FACTOR < q->capacity &&
@@ -65,8 +55,7 @@ int CONCAT(PREFIX_, _queue_pull)(QUEUE_TYPE_ *const q, TYPE_ *const elem) {
         q->capacity /= 2;
         q->buffer = realloc(q->buffer, sizeof(TYPE_) * q->capacity);
         if (q->buffer == NULL)
-            return -1;
+            exit(1);
     }
-    verify(pthread_mutex_unlock(&q->mutex), "mutex unlock failed");
-    return 0;
+    return elem;
 }
