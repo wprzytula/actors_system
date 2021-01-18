@@ -4,6 +4,7 @@
 #include <string.h>
 #include <assert.h>
 #include <zconf.h>
+#include <signal.h>
 
 void say_hello(void **stateptr, size_t nbytes, void *data);
 void introduce(void **stateptr, size_t nbytes, void *data);
@@ -21,7 +22,7 @@ void introduce(void **stateptr, size_t nbytes, void *data) {
     printf("I'm being printed on %li actor.\n", actor_id_self());
     printf("My parent is %li.\n", *(actor_id_t*)stateptr);
 
-    if (actor_id_self() < 100)
+    if (actor_id_self() < 10)
         send_message(*(actor_id_t*)stateptr, (message_t)
             {.message_type = MSG_SPAWN, .nbytes = sizeof(role_t), .data = &role});
 }
@@ -38,6 +39,9 @@ int main() {
     send_message(leader_actor, (message_t)
     {.message_type = MSG_SPAWN, .nbytes = sizeof(role_t), .data = &role});
 //    send_message(leader_actor, (message_t){.message_type = MSG_GODIE});
+    sleep(2);
+//    fputs("Time's up!", stderr);
+//    raise(SIGINT);
     actor_system_join(leader_actor);
 
 	return 0;

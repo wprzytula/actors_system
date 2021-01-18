@@ -33,7 +33,7 @@ int CONCAT(PREFIX_, _queue_push)(QUEUE_TYPE_ *const q, TYPE_ elem) {
 //            q->buffer[q->capacity / 2 + i] = q->buffer[i];
 //        }
         memcpy(q->buffer + q->capacity / 2, q->buffer, q->beg * sizeof(TYPE_));
-        q->end = (q->beg + q->size) % q->capacity;
+        q->end = (q->beg + q    ->size) % q->capacity;
 
         /*for (size_t i = q->beg, j = 0; i != q-> beg; i = (i + 1) % q->capacity / 2, ++j) {
 

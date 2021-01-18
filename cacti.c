@@ -10,8 +10,9 @@
 #include <stdio.h>
 #include <assert.h>
 #include <errno.h>
+#include <signal.h>
 
-#define MAX_LOOPS 10
+#define MAX_MESSAGES_PROCESSED_IN_ONE_ITERATION 10
 #define INITIAL_ACTOR_ARR_CAPACITY 8
 
 /* Actor state struct & operations */
@@ -85,14 +86,16 @@ void act_state_arr_destroy(act_state_arr *arr) {
 
 /* Actor system structure & operations */
 struct actor_system {
+    struct sigaction old_sigact;
+    size_t alive_threads;
     pthread_t pool[POOL_SIZE];
     pthread_mutex_t mutex;
     pthread_cond_t new_request;
-//    pthread_cond_t finished;
     act_state_arr actors;
     actor_id_t max_curr_id;
     size_t alive_actors;
     actors_queue_t act_queue;
+    bool interrupted;
 };
 
 struct actor_system *act_system = NULL;
@@ -123,6 +126,8 @@ void process_message(actor_id_t actor, message_t message) {
     actor_id_t new_actor;
     switch (message.message_type) {
         case MSG_SPAWN:
+            if (act_system->interrupted)
+                break;
             spawn_actor(&new_actor, (role_t *) message.data);
             send_message(new_actor, (message_t){.message_type = MSG_HELLO,
                     .nbytes = sizeof(actor_id_t),
@@ -132,8 +137,6 @@ void process_message(actor_id_t actor, message_t message) {
             act_system->actors.arr[actor].gone_die = true;
             --act_system->alive_actors;
             break;
-            /*case MSG_HELLO:
-                break;*/
         default:
             if (message.message_type >= (message_type_t)(act_system->actors.arr[actor].role.nprompts))
                 fatal("Requested message number not present in actor's control array.");
@@ -142,10 +145,30 @@ void process_message(actor_id_t actor, message_t message) {
     }
 }
 
-void* worker(void *data) {
+void actor_system_destroy() {
+    int err;
+    if (act_system == NULL)
+        return;
+
+    verify(pthread_cond_destroy(&act_system->new_request), "cond destruction failed");
+    verify(pthread_mutex_destroy(&act_system->mutex), "mutex destruction failed");
+    actors_queue_destroy(&act_system->act_queue);
+    act_state_arr_destroy(&act_system->actors);
+    free(act_system);
+
+    // bring the previous handling method back
+    sigaction(SIGINT, &act_system->old_sigact, NULL);
+
+    debug(puts("System destroyed!"));
+}
+
+void* worker(__attribute__((unused)) void *data) {
     int err;
 //    actor_id_t curr_actor;
     message_t message;
+    verify(pthread_mutex_lock(&act_system->mutex), "mutex lock failed");
+    ++act_system->alive_threads;
+    verify(pthread_mutex_unlock(&act_system->mutex), "mutex unlock failed");
 //    pthread_once(&once, create_key);
 //    pthread_setspecific(thread_key, &curr_actor);
     debug(printf("Thread %lu started!\n", pthread_self() % 100));
@@ -153,16 +176,17 @@ void* worker(void *data) {
         // determine job
         debug(printf("Thread %lu takes new job!\n", pthread_self() % 100));
         verify(pthread_mutex_lock(&act_system->mutex), "mutex lock failed");
-        while (actors_queue_is_empty(&act_system->act_queue) && act_system->alive_actors > 0) {
+        while (/*!act_system->interrupted ||*/
+                (actors_queue_is_empty(&act_system->act_queue) && act_system->alive_actors > 0)) {
             debug(printf("Thread %lu went asleep.\n", pthread_self() % 100));
             verify(pthread_cond_wait(&act_system->new_request, &act_system->mutex),
                     "cond wait failed");
             debug(printf("Thread %lu woke up!\n", pthread_self() % 100));
         }
         if (actors_queue_is_empty(&act_system->act_queue) && act_system->alive_actors == 0) {
-            verify(pthread_mutex_unlock(&act_system->mutex), "mutex unlock failed");
             verify(pthread_cond_signal(&act_system->new_request),
                    "cond signal failed");
+            verify(pthread_mutex_unlock(&act_system->mutex), "mutex unlock failed");
             break;
         }
         assert(!actors_queue_is_empty(&act_system->act_queue));
@@ -175,7 +199,7 @@ void* worker(void *data) {
                "mutex lock failed");
         act_system->actors.arr[curr_actor].worked_at = true;
         // loop in order to reduce resource waste on context switch
-        for (size_t i = 0; i < MAX_LOOPS; ++i) {
+        for (size_t i = 0; i < MAX_MESSAGES_PROCESSED_IN_ONE_ITERATION; ++i) {
             assert(!message_queue_is_empty(&act_system->actors.arr[curr_actor].queue));
             message = message_queue_pop(&act_system->actors.arr[curr_actor].queue);
             verify(pthread_mutex_unlock(&act_system->actors.arr[curr_actor].mutex),
@@ -198,9 +222,51 @@ void* worker(void *data) {
         verify(pthread_mutex_unlock(&act_system->actors.arr[curr_actor].mutex),
                "mutex unlock failed");
     }
+    verify(pthread_mutex_lock(&act_system->mutex), "mutex lock failed");
+    --act_system->alive_threads;
+    if (act_system->interrupted && act_system->alive_threads == 0) {
+        verify(pthread_mutex_unlock(&act_system->mutex), "mutex unlock failed");
+        actor_system_destroy();
+        raise(SIGINT);
+    } else
+        verify(pthread_mutex_unlock(&act_system->mutex), "mutex unlock failed");
     debug(printf("Thread %lu finished!\n", pthread_self() % 100));
     return NULL;
 }
+
+void stop_thread_pool() {
+    if (act_system == NULL)
+        return;
+    int err;
+    for (size_t i = 0; i < POOL_SIZE; ++i) {
+        if (act_system->pool[i] != pthread_self()) {
+            pthread_cancel(act_system->pool[i]);
+            verify(pthread_join(act_system->pool[i], NULL), "join failed");
+        }
+    }
+    debug(puts("Threads stopped!"));
+}
+
+void interrupt() {
+    int err;
+    debug(fputs("Interrupted!", stderr));
+    act_system->interrupted = true;
+    act_system->alive_actors = 0;
+    for (actor_id_t i = 0; i <= act_system->max_curr_id; ++i) {
+        act_system->actors.arr[i].gone_die = true;
+    }
+    verify(pthread_mutex_lock(&act_system->mutex), "mutex lock failed");
+    verify(pthread_cond_broadcast(&act_system->new_request), "cond broadcast failed");
+    verify(pthread_mutex_unlock(&act_system->mutex), "mutex unlock failed");
+}
+
+//void sigint_handler(int sig) {
+//    debug(puts("Interrupted!"));
+//    stop_thread_pool();
+//    actor_system_destroy();
+//    debug(puts("Interruptedv2!"));
+//    raise(SIGINT);
+//}
 
 int actor_system_create(actor_id_t *actor, role_t *const role) {
     if (act_system != NULL)
@@ -219,15 +285,23 @@ int actor_system_create(actor_id_t *actor, role_t *const role) {
         goto MESSAGE_QUEUE_INIT_FAILED;
     if (pthread_mutex_init(&act_system->mutex, NULL) != 0)
         goto MUTEX_INIT_FAILED;
-//    if (pthread_cond_init(&act_system->finished, NULL) != 0)
-//        goto FINISHED_INIT_FAILED;
     if (pthread_cond_init(&act_system->new_request, NULL) != 0)
         goto NEW_REQUEST_INIT_FAILED;
 
     act_system->max_curr_id = 0;
     act_system->alive_actors = 1;
+    act_system->interrupted = false;
     *actor = 0;
     debug(puts("System created!"));
+
+    // Setting up signal handling
+    static struct sigaction sigact;
+    static sigset_t block_mask;
+    sigemptyset(&block_mask);
+    sigact.sa_handler = interrupt;
+    sigact.sa_mask = block_mask;
+    sigact.sa_flags = 0;
+    sigaction(SIGINT, &sigact, &act_system->old_sigact);
 
     // Starting threads
     pthread_attr_t attr;
@@ -238,56 +312,25 @@ int actor_system_create(actor_id_t *actor, role_t *const role) {
     debug(puts("All threads created!"));
     return 0;
 
-NEW_REQUEST_INIT_FAILED:
-//    pthread_cond_destroy(&act_system->finished);
-//FINISHED_INIT_FAILED:
+    NEW_REQUEST_INIT_FAILED:
     pthread_mutex_destroy(&act_system->mutex);
-MUTEX_INIT_FAILED:
+    MUTEX_INIT_FAILED:
     message_queue_destroy(&act_system->actors.arr[0].queue);
-MESSAGE_QUEUE_INIT_FAILED:
+    MESSAGE_QUEUE_INIT_FAILED:
     actors_queue_destroy(&act_system->act_queue);
-ACTOR_QUEUE_INIT_FAILED:
-ACT_STATE_INIT_FAILED:
+    ACTOR_QUEUE_INIT_FAILED:
+    ACT_STATE_INIT_FAILED:
     act_state_arr_destroy(&act_system->actors);
-ACT_STATE_ARR_INIT_FAILED:
+    ACT_STATE_ARR_INIT_FAILED:
     free(act_system);
-MAIN_MALLOC_FAILED:
+    MAIN_MALLOC_FAILED:
     return -1;
-}
-
-int actor_system_destroy() {
-    int retval = 0;
-    if (act_system == NULL)
-        return -1;
-    // stop all threads in the pool
-    for (size_t i = 0; i < POOL_SIZE; ++i) {
-        if (act_system->pool[i] != pthread_self()) {
-            pthread_cancel(act_system->pool[i]);
-            if (pthread_join(act_system->pool[i], NULL) != 0)
-                retval = -1;
-        }
-    }
-    debug(puts("Threads stopped!"));
-
-    // free actor system structures
-    pthread_cond_destroy(&act_system->new_request);
-//    pthread_cond_destroy(&act_system->finished);
-    pthread_mutex_destroy(&act_system->mutex);
-    actors_queue_destroy(&act_system->act_queue);
-    act_state_arr_destroy(&act_system->actors);
-    free(act_system);
-
-    debug(puts("System destroyed!"));
-    return retval;
 }
 
 void actor_system_join(actor_id_t actor) {
     int err;
 //    verify(pthread_mutex_lock(&act_system->mutex), "mutex lock failed");
-    /*while (actor >= 0 && actor <= act_system->max_curr_id) {
-        verify(pthread_cond_wait(&act_system->finished, &act_system->mutex),
-                "cond wait failed");
-    }*/
+// TODO : should I use mutex here?
     if (actor >= 0 && actor <= act_system->max_curr_id) {
         for (size_t i = 0; i < POOL_SIZE; ++i)
             verify(pthread_join(act_system->pool[i], NULL), "join failed");
@@ -313,10 +356,10 @@ int send_message(actor_id_t actor, message_t message) {
     if (was_empty) {
         verify(pthread_mutex_lock(&act_system->mutex), "mutex lock failed");
         assert(!actors_queue_is_full(&act_system->act_queue));
-        debug(fprintf(stderr, "Before push: beg: %lu, end: %lu, size: %lu, cap: %lu\n", act_system->act_queue.beg,
+        debug(printf("Actors queue before push: beg: %lu, end: %lu, size: %lu, cap: %lu\n", act_system->act_queue.beg,
                 act_system->act_queue.end, act_system->act_queue.size, act_system->act_queue.capacity));
         actors_queue_push(&act_system->act_queue, actor);
-        debug(fprintf(stderr, "After push: beg: %lu, end: %lu, size: %lu, cap: %lu\n", act_system->act_queue.beg,
+        debug(printf("Actors queue after push: beg: %lu, end: %lu, size: %lu, cap: %lu\n", act_system->act_queue.beg,
                 act_system->act_queue.end, act_system->act_queue.size, act_system->act_queue.capacity));
         debug(printf("Pushed actor %li to actors queue.\n", actor));
         verify(pthread_cond_signal(&act_system->new_request), "cond signal failed");
