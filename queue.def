@@ -1,10 +1,13 @@
 #include <string.h>
+#include <errno.h>
 #include "queue.dec"
+#include "err.h"
 
 #define SHRINK_FACTOR 4
+#define INITIAL_CAPACITY 8
 
 int CONCAT(PREFIX_, _queue_init)(QUEUE_TYPE_ *const q, size_t max_size) {
-    q->capacity = 16;
+    q->capacity = INITIAL_CAPACITY;
     q->beg = 0;
     q->end = 0;
     q->size = 0;
@@ -17,7 +20,7 @@ int CONCAT(PREFIX_, _queue_init)(QUEUE_TYPE_ *const q, size_t max_size) {
 
 int CONCAT(PREFIX_, _queue_push)(QUEUE_TYPE_ *const q, TYPE_ elem) {
     if (q->size == q->max_size) {
-        return -2;
+        fatal("maximum queue size reached");
     }
     if (q->size == q->capacity) {
         q->capacity *= 2;
@@ -30,32 +33,31 @@ int CONCAT(PREFIX_, _queue_push)(QUEUE_TYPE_ *const q, TYPE_ elem) {
 //            q->buffer[q->capacity / 2 + i] = q->buffer[i];
 //        }
         memcpy(q->buffer + q->capacity / 2, q->buffer, q->beg * sizeof(TYPE_));
-        q->end = q->beg + q->size;
+        q->end = (q->beg + q->size) % q->capacity;
 
         /*for (size_t i = q->beg, j = 0; i != q-> beg; i = (i + 1) % q->capacity / 2, ++j) {
 
         }*/
     }
-
     q->buffer[q->end] = elem;
-    q->end = (q->end + 1 % q->capacity);
-    ++q->size;
+    q->end = ((q->end + 1) % q->capacity);
+    ++(q->size);
     return 0;
 }
 
 TYPE_ CONCAT(PREFIX_, _queue_pop)(QUEUE_TYPE_ *const q) {
     if (CONCAT(PREFIX_, _queue_is_empty)(q))
-        exit(1);
+        fatal("Attempted pop from an empty queue.");
 
     TYPE_ elem = q->buffer[q->beg];
-    q->beg = (q->beg + 1 % q->capacity);
+    q->beg = ((q->beg + 1) % q->capacity);
     --q->size;
-    if (q->size * SHRINK_FACTOR < q->capacity &&
+    if (q->capacity > INITIAL_CAPACITY && q->size * SHRINK_FACTOR < q->capacity &&
         q->beg * 2 < q->capacity && q->end * 2 < q->capacity) {
         q->capacity /= 2;
         q->buffer = realloc(q->buffer, sizeof(TYPE_) * q->capacity);
         if (q->buffer == NULL)
-            exit(1);
+            fatal("realloc failed");
     }
     return elem;
 }

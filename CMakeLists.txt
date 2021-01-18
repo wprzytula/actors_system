@@ -3,7 +3,7 @@ project (CACTI)
 
 enable_testing()
 
-set(CMAKE_C_FLAGS "-g -Wall -Wextra -std=c11 -pthread")
+set(CMAKE_C_FLAGS "-g -Wall -Wextra -std=c11 -pthread -DPOOL_SIZE=3 -DDEBUG")
 
 # http://stackoverflow.com/questions/10555706/
 macro (add_executable _name)

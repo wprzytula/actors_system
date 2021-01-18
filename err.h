@@ -14,4 +14,13 @@ do { \
         syserr(err, message); \
 } while (0)
 
+#ifdef DEBUG
+#define debug(action) \
+do { \
+    action; \
+} while (0)
+#else
+#define debug(action)
+#endif
+
 #endif

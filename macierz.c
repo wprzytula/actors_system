@@ -2,34 +2,43 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
+#include <zconf.h>
+
+void say_hello(void **stateptr, size_t nbytes, void *data);
+void introduce(void **stateptr, size_t nbytes, void *data);
+act_t prompts[2] = {say_hello, introduce};
+role_t role = {.nprompts = 2, .prompts = prompts};
 
 void say_hello(void **stateptr, size_t nbytes, void *data) {
     puts("Hey Hey!");
+    *stateptr = data;
+    printf("My stateptr is %li.\n", *(actor_id_t*)stateptr);
+//    **(actor_id_t**)stateptr = (actor_id_t)data;
+    send_message(actor_id_self(), (message_t){.message_type = 0x1});
 }
 void introduce(void **stateptr, size_t nbytes, void *data) {
     printf("I'm being printed on %li actor.\n", actor_id_self());
+    printf("My parent is %li.\n", *(actor_id_t*)stateptr);
+
+    if (actor_id_self() < 100)
+        send_message(*(actor_id_t*)stateptr, (message_t)
+            {.message_type = MSG_SPAWN, .nbytes = sizeof(role_t), .data = &role});
 }
 
 int main() {
     actor_id_t leader_actor;
-    role_t *role = malloc(sizeof(role_t));
-//    role->prompts = malloc(2 * sizeof(act_t));
-    role->nprompts = 2;
-    act_t temp[2] = {say_hello, introduce};
-    role->prompts = temp;
+    role.nprompts = 2;
 //    memcpy(role->prompts, temp, 2);
-    actor_system_create(&leader_actor, role);
-    send_message(leader_actor, (message_t){.message_type = MSG_HELLO});
+    actor_system_create(&leader_actor, &role);
+//    sleep(1);
+//    send_message(leader_actor, (message_t){.message_type = MSG_HELLO});
 //    send_message(leader_actor, (message_t){.message_type = 0x2});
-    send_message(leader_actor, (message_t){.message_type = 0x1});
-    act_t prompts[2] = {introduce, say_hello};
-    role_t role2 = {.nprompts = 2, .prompts = prompts};
+//    send_message(leader_actor, (message_t){.message_type = 0x1});
     send_message(leader_actor, (message_t)
-    {.message_type = MSG_SPAWN, .nbytes = sizeof(role_t), .data = &role2});
-    send_message(leader_actor, (message_t){.message_type = MSG_GODIE});
+    {.message_type = MSG_SPAWN, .nbytes = sizeof(role_t), .data = &role});
+//    send_message(leader_actor, (message_t){.message_type = MSG_GODIE});
     actor_system_join(leader_actor);
 
-//    free(role->prompts);
-    free(role);
 	return 0;
 }
