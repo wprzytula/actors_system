@@ -6,12 +6,12 @@
 #include <zconf.h>
 #include <signal.h>
 
-void say_hello(void **stateptr, size_t nbytes, void *data);
+void hello(void **stateptr, size_t nbytes, void *data);
 void introduce(void **stateptr, size_t nbytes, void *data);
 act_t prompts[2] = {say_hello, introduce};
 role_t role = {.nprompts = 2, .prompts = prompts};
 
-void say_hello(void **stateptr, size_t nbytes, void *data) {
+void hello(void **stateptr, size_t nbytes, void *data) {
     puts("Hey Hey!");
     *stateptr = data;
     printf("My stateptr is %li.\n", *(actor_id_t*)stateptr);

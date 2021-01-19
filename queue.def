@@ -18,7 +18,7 @@ int CONCAT(PREFIX_, _queue_init)(QUEUE_TYPE_ *const q, size_t max_size) {
     return 0;
 }
 
-int CONCAT(PREFIX_, _queue_push)(QUEUE_TYPE_ *const q, TYPE_ elem) {
+void CONCAT(PREFIX_, _queue_push)(QUEUE_TYPE_ *const q, TYPE_ elem) {
     if (q->size == q->max_size) {
         fatal("maximum queue size reached");
     }
@@ -26,23 +26,18 @@ int CONCAT(PREFIX_, _queue_push)(QUEUE_TYPE_ *const q, TYPE_ elem) {
         q->capacity *= 2;
         q->buffer = realloc(q->buffer, sizeof(TYPE_) * q->capacity);
         if (q->buffer == NULL)
-            return -1;
+            fatal("realloc failed");
 
         // TODO: should it work anyhow???
 //        for (size_t i = 0; i < q->beg; ++i) {
 //            q->buffer[q->capacity / 2 + i] = q->buffer[i];
 //        }
         memcpy(q->buffer + q->capacity / 2, q->buffer, q->beg * sizeof(TYPE_));
-        q->end = (q->beg + q    ->size) % q->capacity;
-
-        /*for (size_t i = q->beg, j = 0; i != q-> beg; i = (i + 1) % q->capacity / 2, ++j) {
-
-        }*/
+        q->end = (q->beg + q->size) % q->capacity;
     }
     q->buffer[q->end] = elem;
     q->end = ((q->end + 1) % q->capacity);
     ++(q->size);
-    return 0;
 }
 
 TYPE_ CONCAT(PREFIX_, _queue_pop)(QUEUE_TYPE_ *const q) {

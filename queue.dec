@@ -40,6 +40,6 @@ static inline bool CONCAT(PREFIX_, _queue_needs_realloc)(QUEUE_TYPE_ const *cons
     return q->size == q->capacity;
 }
 
-int CONCAT(PREFIX_, _queue_push)(QUEUE_TYPE_ *const q, TYPE_ elem);
+void CONCAT(PREFIX_, _queue_push)(QUEUE_TYPE_ *const q, TYPE_ elem);
 
 TYPE_ CONCAT(PREFIX_, _queue_pop)(QUEUE_TYPE_ *const q);
