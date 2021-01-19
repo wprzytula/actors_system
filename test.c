@@ -30,6 +30,7 @@ void introduce(void **stateptr, size_t nbytes, void *data) {
 int main() {
     actor_id_t leader_actor;
     role.nprompts = 2;
+//    memcpy(role->prompts, temp, 2);
     actor_system_create(&leader_actor, &role);
 //    sleep(1);
 //    send_message(leader_actor, (message_t){.message_type = MSG_HELLO});

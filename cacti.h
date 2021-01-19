@@ -246,9 +246,9 @@ umieszczonej w pliku data1.dat wywołanie:
 
 $ cat data1.dat | ./macierz
 powinno spowodować pojawienie się na wyjściu
-
 14
 33
+
 Opis programu silnia
 Program silnia powinien wczytywać ze standardowego wejścia pojedynczą liczbę n, a następnie obliczać
 za pomocą systemu aktorów liczbę n!. Każdy aktor ma otrzymywać w komunikacie dotychczas obliczoną częściową
@@ -257,8 +257,8 @@ powinien zostać wypisany na standardowe wyjście. Dla przykładu wywołanie:
 
 $ echo 5 | ./silnia
 powinno spowodować pojawienie się na wyjściu
-
 120
+
 Wymagania techniczne
 Do synchronizacji można korzystać tylko z mechanizmów biblioteki pthreads. Można korzystać z plików
 nagłówkowych:
