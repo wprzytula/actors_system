@@ -13,11 +13,11 @@ const int MSG_COMP = 0x1;
 const int MSG_PASS = 0x2;
 
 void hello(void **stateptr, size_t nbytes, void *data);
-void compute_row(void **stateptr, size_t nbytes, void *data);
+void compute(fact_t **stateptr, size_t nbytes, fact_t *data);
 void pass(void **stateptr, size_t nbytes, void *data);
 
 role_t role;
-act_t prompts[3] = {hello, compute_row, pass};
+act_t prompts[3] = {hello, (act_t)compute, pass};
 
 void hello(__attribute__((unused)) void **stateptr,
         __attribute__((unused)) size_t nbytes, void *data) {
@@ -26,19 +26,19 @@ void hello(__attribute__((unused)) void **stateptr,
              .data = (void*)actor_id_self()});
 }
 
-void compute_row(void **stateptr, __attribute__((unused)) size_t nbytes, void *data) {
+void compute(fact_t **stateptr, __attribute__((unused)) size_t nbytes, fact_t *data) {
     *stateptr = malloc(sizeof(fact_t));
     if (!*stateptr)
         fatal("malloc failed");
-    ((fact_t*)*stateptr)->n = ((fact_t*)data)->n;
-    ((fact_t*)*stateptr)->k = ((fact_t*)data)->k + 1;
-    ((fact_t*)*stateptr)->k_fact = ((fact_t*)data)->k_fact * ((fact_t*)*stateptr)->k;
+    (*stateptr)->n = data->n;
+    (*stateptr)->k = data->k + 1;
+    (*stateptr)->k_fact = data->k_fact * (*stateptr)->k;
     free(data);
     debug(printf("Factorial computed in actor %ld is %lld\n", actor_id_self(),
-            ((fact_t*)*stateptr)->k_fact));
-    if (((fact_t*)*stateptr)->k == ((fact_t*)*stateptr)->n) {
+            (*stateptr)->k_fact));
+    if ((*stateptr)->k == (*stateptr)->n) {
         // print and clean
-        printf("%lld\n", ((fact_t*)*stateptr)->k_fact);
+        printf("%lld\n", (*stateptr)->k_fact);
         free(*stateptr);
         send_message(actor_id_self(), (message_t){.message_type = MSG_GODIE});
     } else {
@@ -74,7 +74,8 @@ int main() {
     if (!initial)
         fatal("malloc failed");
     *initial = (fact_t){.n = n, .k = 0, .k_fact = 1};
-    actor_system_create(&leader, &role);
+    if (actor_system_create(&leader, &role) != 0)
+        fatal("failed to create actor system");
     send_message(leader, (message_t)
     {.message_type = MSG_COMP, .nbytes = sizeof(role_t), initial});
 

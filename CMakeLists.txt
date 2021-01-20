@@ -14,7 +14,7 @@ macro (add_executable _name)
   endif()
 endmacro()
 
-add_library(cacti STATIC cacti.c err.c message_queue.c message_queue.h actors_queue.c actors_queue.h)
+add_library(cacti STATIC cacti.c err.c message_queue.c actors_queue.c)
 add_executable(macierz macierz.c)
 add_executable(silnia silnia.c)
 add_subdirectory(test)

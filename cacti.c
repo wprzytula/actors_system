@@ -13,7 +13,7 @@
 #include <stdio.h>
 #endif
 
-#define MAX_MESSAGES_PROCESSED_IN_ONE_ITERATION 10
+#define MAX_MESSAGES_PROCESSED_IN_ONE_ITERATION 1
 #define INITIAL_ACTOR_ARR_CAPACITY 8
 
 /* Actor state struct & operations */
@@ -27,7 +27,7 @@ typedef struct {
     message_queue_t queue;
 } act_state_t;
 
-int act_state_init(act_state_t *const state, role_t *const role, actor_id_t new_id) {
+static int act_state_init(act_state_t *const state, role_t *const role, actor_id_t new_id) {
     assert(role);
     if (pthread_mutex_init(&state->mutex, NULL) != 0)
         return -1;
@@ -43,7 +43,7 @@ int act_state_init(act_state_t *const state, role_t *const role, actor_id_t new_
     return 0;
 }
 
-void act_state_destroy(act_state_t *const state) {
+static void act_state_destroy(act_state_t *const state) {
     int err;
     verify(pthread_mutex_destroy(&state->mutex),"mutex destruction failed.");
     message_queue_destroy(&state->queue);
@@ -56,7 +56,7 @@ typedef struct {
     act_state_t *arr;
 } act_state_arr;
 
-int act_state_arr_init(act_state_arr *const arr) {
+static int act_state_arr_init(act_state_arr *const arr) {
     assert(arr);
     arr->capacity = INITIAL_ACTOR_ARR_CAPACITY;
     arr->arr = malloc(arr->capacity * sizeof(act_state_t));
@@ -66,7 +66,7 @@ int act_state_arr_init(act_state_arr *const arr) {
     return 0;
 }
 
-int act_state_arr_emplace(act_state_arr *const arr, role_t *const role, actor_id_t new_id) {
+static int act_state_arr_emplace(act_state_arr *const arr, role_t *const role, actor_id_t new_id) {
     assert(arr && role);
     assert(arr->size < CAST_LIMIT);
     if (arr->capacity == arr->size) {
@@ -78,7 +78,7 @@ int act_state_arr_emplace(act_state_arr *const arr, role_t *const role, actor_id
     return act_state_init(arr->arr + arr->size++, role, new_id);
 }
 
-void act_state_arr_destroy(act_state_arr *const arr) {
+static void act_state_arr_destroy(act_state_arr *const arr) {
     assert(arr);
     for (size_t i = 0; i < arr->size; ++i) {
         act_state_destroy(arr->arr + i);
@@ -102,18 +102,11 @@ struct actor_system {
 struct actor_system *act_system = NULL;
 _Thread_local actor_id_t curr_actor;
 
-///* Key thread-safe creation - enables actor_id_self() proper behaviour */
-//pthread_key_t thread_key;
-//pthread_once_t once = PTHREAD_ONCE_INIT;
-//void create_key() {
-//    pthread_key_create(&thread_key, NULL);
-//}
 actor_id_t actor_id_self() {
-//    return *(actor_id_t*)pthread_getspecific(thread_key);
     return curr_actor;
 }
 
-void spawn_actor(actor_id_t *const new_actor, role_t *const role) {
+static void spawn_actor(actor_id_t *const new_actor, role_t *const role) {
     int err;
     if (act_system->actors.size == CAST_LIMIT)
         fatal("Maximum number of actors exceeded");
@@ -121,11 +114,11 @@ void spawn_actor(actor_id_t *const new_actor, role_t *const role) {
     *new_actor = act_system->actors.size;
     ++act_system->alive_actors;
     verify(act_state_arr_emplace(&act_system->actors, role, *new_actor), "malloc failed");
-    debug(printf("Spawned new actor %li\n", *new_actor));
+    debug(printf("Spawned new actor %li.\n", *new_actor));
     verify(pthread_mutex_unlock(&act_system->mutex), "mutex unlock failed");
 }
 
-void process_message(actor_id_t actor, message_t message) {
+static void process_message(actor_id_t actor, message_t message) {
     actor_id_t new_actor;
     switch (message.message_type) {
         case MSG_SPAWN:
@@ -148,7 +141,7 @@ void process_message(actor_id_t actor, message_t message) {
     }
 }
 
-void actor_system_destroy() {
+static void actor_system_destroy() {
     int err;
     if (act_system == NULL)
         return;
@@ -165,15 +158,12 @@ void actor_system_destroy() {
     debug(puts("System destroyed!"));
 }
 
-void* worker(__attribute__((unused)) void *data) {
+static void* worker(__attribute__((unused)) void *data) {
     int err;
-//    actor_id_t curr_actor;
     message_t message;
     verify(pthread_mutex_lock(&act_system->mutex), "mutex lock failed");
     ++act_system->alive_threads;
     verify(pthread_mutex_unlock(&act_system->mutex), "mutex unlock failed");
-//    pthread_once(&once, create_key);
-//    pthread_setspecific(thread_key, &curr_actor);
     debug(printf("Thread %lu started!\n", pthread_self() % 100));
 
     while (true) {
@@ -198,7 +188,8 @@ void* worker(__attribute__((unused)) void *data) {
         verify(pthread_mutex_unlock(&act_system->mutex), "mutex unlock failed");
 
         // work on actor begins
-        debug(printf("Thread %lu began working on actor %ld!\n", pthread_self() % 100, curr_actor));
+        debug(printf("Thread %lu began working on actor %ld!\n",
+                pthread_self() % 100, curr_actor));
         verify(pthread_mutex_lock(&act_system->actors.arr[curr_actor].mutex),
                "mutex lock failed");
         act_system->actors.arr[curr_actor].worked_at = true;
@@ -210,6 +201,8 @@ void* worker(__attribute__((unused)) void *data) {
             verify(pthread_mutex_unlock(&act_system->actors.arr[curr_actor].mutex),
                    "mutex unlock failed");
 
+            debug(printf("Thread %lu has started processing message of type %ld on actor %ld!\n",
+                         pthread_self() % 100, message.message_type,  curr_actor));
             process_message(curr_actor, message);
 
             debug(printf("Thread %lu has processed message of type %ld on actor %ld!\n",
@@ -242,7 +235,7 @@ void* worker(__attribute__((unused)) void *data) {
     return NULL;
 }
 
-void interrupt() {
+static void interrupt() {
     int err;
     debug(fputs("Interrupted!", stderr));
     act_system->interrupted = true;
@@ -326,14 +319,16 @@ int send_message(actor_id_t actor, message_t message) {
         return -2;
     if (act_system->actors.arr[actor].gone_die)
         return -1;
-    debug(printf("Sending message of type %li to actor %li\n", message.message_type, actor));
+
+    debug(printf("Sending message of type %li to actor %li...\n", message.message_type, actor));
     verify(pthread_mutex_lock(&act_system->actors.arr[actor].mutex), "mutex lock failed");
     bool was_empty = !act_system->actors.arr[actor].worked_at &&
             message_queue_is_empty(&act_system->actors.arr[actor].queue);
-    assert(message_queue_is_empty(&act_system->actors.arr[actor].queue));
+
+    assert(!message_queue_is_full(&act_system->actors.arr[actor].queue));
     message_queue_push(&act_system->actors.arr[actor].queue, message);
     verify(pthread_mutex_unlock(&act_system->actors.arr[actor].mutex), "mutex unlock failed");
-    debug(printf("Sent message to actor %li\n", actor));
+    debug(printf("Sent message to actor %li.\n", actor));
 
     if (was_empty) {
         verify(pthread_mutex_lock(&act_system->mutex), "mutex lock failed");
