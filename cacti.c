@@ -54,16 +54,67 @@ typedef struct {
     size_t capacity;
     size_t size;
     act_state_t **arr; // array of malloc'd pointers
+
+    // provides safety for realloc operation
+    bool realloc_needed;
+    size_t readers_inside_num;
+    pthread_mutex_t mutex;
+    pthread_cond_t readers_left;
+    pthread_cond_t realloc_done;
 } act_state_arr;
 
 static int act_state_arr_init(act_state_arr *const arr) {
     assert(arr);
     arr->capacity = INITIAL_ACTOR_ARR_CAPACITY;
-    arr->arr = malloc(arr->capacity * sizeof(act_state_t));
     arr->size = 0;
+    arr->arr = malloc(arr->capacity * sizeof(act_state_t*));
     if (arr->arr == NULL)
         return 1;
+    arr->readers_inside_num = 0;
+    arr->realloc_needed = false;
+    if (pthread_mutex_init(&arr->mutex, NULL) != 0) {
+        free(arr->arr);
+        return -1;
+    }
+    if (pthread_cond_init(&arr->readers_left, NULL) != 0) {
+        pthread_mutex_destroy(&arr->mutex);
+        free(arr->arr);
+        return -1;
+    }
+    if (pthread_cond_init(&arr->realloc_done, NULL) != 0) {
+        pthread_cond_destroy(&arr->readers_left);
+        pthread_mutex_destroy(&arr->mutex);
+        free(arr->arr);
+        return -1;
+    }
     return 0;
+}
+
+static void act_state_arr_acquire(act_state_arr *const arr, bool as_writer) {
+    int err;
+    verify(pthread_mutex_lock(&arr->mutex), "mutex lock failed");
+    if (as_writer) {
+        arr->realloc_needed = true;
+        while (arr->readers_inside_num > 0) {
+            verify(pthread_cond_wait(&arr->readers_left, &arr->mutex), "cond wait failed");
+        }
+    } else {
+        while (arr->realloc_needed) {
+            verify(pthread_cond_wait(&arr->realloc_done, &arr->mutex), "cond wait failed");
+        }
+        ++arr->readers_inside_num;
+    }
+    verify(pthread_mutex_unlock(&arr->mutex), "mutex unlock failed");
+}
+
+static void act_state_arr_release(act_state_arr *const arr, bool as_writer) {
+    int err;
+    verify(pthread_mutex_lock(&arr->mutex), "mutex lock failed");
+    if (as_writer)
+        arr->realloc_needed = false;
+    else
+        --arr->readers_inside_num;
+    verify(pthread_mutex_unlock(&arr->mutex), "mutex unlock failed");
 }
 
 static int act_state_arr_emplace(act_state_arr *const arr, role_t *const role, actor_id_t new_id) {
@@ -72,13 +123,18 @@ static int act_state_arr_emplace(act_state_arr *const arr, role_t *const role, a
     if (arr->capacity == arr->size) {
         arr->capacity *= 2;
         // Here we act as a privileged Writer in Readers & Writers model
-        if ((arr->arr = realloc(arr->arr, sizeof(act_state_t) * arr->capacity)) == NULL)
+        act_state_arr_acquire(arr, true);
+        if ((arr->arr = realloc(arr->arr, sizeof(act_state_t*) * arr->capacity)) == NULL)
             fatal("realloc failed");
+        act_state_arr_release(arr, true);
     }
+    act_state_arr_acquire(arr, false);
     arr->arr[arr->size] = malloc(sizeof(act_state_t));
     if (arr->arr[arr->size] == NULL)
         fatal("malloc failed");
-    return act_state_init(arr->arr[arr->size++], role, new_id);
+    int res = act_state_init(arr->arr[arr->size++], role, new_id);
+    act_state_arr_release(arr, false);
+    return res;
 }
 
 static void act_state_arr_destroy(act_state_arr *const arr) {
@@ -114,17 +170,22 @@ static void spawn_actor(actor_id_t *const new_actor, role_t *const role) {
     int err;
     if (act_system->actors.size == CAST_LIMIT)
         fatal("Maximum number of actors exceeded");
+
     verify(pthread_mutex_lock(&act_system->mutex), "mutex lock failed");
     *new_actor = act_system->actors.size;
     ++act_system->alive_actors;
-    verify(act_state_arr_emplace(&act_system->actors, role, *new_actor), "malloc failed");
-    debug(printf("Spawned new actor %li.\n", *new_actor));
     verify(pthread_mutex_unlock(&act_system->mutex), "mutex unlock failed");
+
+    verify(act_state_arr_emplace(&act_system->actors, role, *new_actor), "malloc failed");
+
+    debug(printf("Spawned new actor %li.\n", *new_actor));
 }
 
 static void process_message(actor_id_t actor, message_t message) {
+    int err;
     actor_id_t new_actor;
     switch (message.message_type) {
+
         case MSG_SPAWN:
             if (act_system->interrupted)
                 break;
@@ -133,15 +194,27 @@ static void process_message(actor_id_t actor, message_t message) {
                     .nbytes = sizeof(actor_id_t),
                     .data = (void*)actor});
             break;
+
         case MSG_GODIE:
+            act_state_arr_acquire(&act_system->actors, false);
             act_system->actors.arr[actor]->gone_die = true;
+            act_state_arr_release(&act_system->actors, false);
+
+            verify(pthread_mutex_lock(&act_system->mutex), "mutex lock failed");
             --act_system->alive_actors;
+            verify(pthread_mutex_unlock(&act_system->mutex), "mutex unlock failed");
             break;
+
         default:
+            act_state_arr_acquire(&act_system->actors, false);
+
             if (message.message_type >= (message_type_t)(act_system->actors.arr[actor]->role.nprompts))
                 fatal("Requested message number not present in actor's control array.");
+
             act_system->actors.arr[actor]->role.prompts[message.message_type]
                     (&act_system->actors.arr[actor]->state, message.nbytes, message.data);
+
+            act_state_arr_release(&act_system->actors, false);
     }
 }
 
@@ -161,10 +234,11 @@ static void actor_system_destroy() {
     free(act_system);
     debug(puts("System destroyed!"));
 }
-
 static void* worker(__attribute__((unused)) void *data) {
     int err;
     message_t message;
+    act_state_t *curr_act_config;
+
     verify(pthread_mutex_lock(&act_system->mutex), "mutex lock failed");
     ++act_system->alive_threads;
     verify(pthread_mutex_unlock(&act_system->mutex), "mutex unlock failed");
@@ -194,15 +268,19 @@ static void* worker(__attribute__((unused)) void *data) {
         // work on actor begins
         debug(printf("Thread %lu began working on actor %ld!\n",
                 pthread_self() % 100, curr_actor));
-        verify(pthread_mutex_lock(&act_system->actors.arr[curr_actor]->mutex),
+        act_state_arr_acquire(&act_system->actors, false);
+        curr_act_config = act_system->actors.arr[curr_actor];
+        act_state_arr_release(&act_system->actors, false);
+
+        verify(pthread_mutex_lock(&curr_act_config->mutex),
                "mutex lock failed");
-        act_system->actors.arr[curr_actor]->worked_at = true;
+        curr_act_config->worked_at = true;
 
         // loop in order to reduce resource waste on context switch
         for (size_t i = 0; i < MAX_MESSAGES_PROCESSED_IN_ONE_ITERATION; ++i) {
-            assert(!message_queue_is_empty(&act_system->actors.arr[curr_actor].queue));
-            message = message_queue_pop(&act_system->actors.arr[curr_actor]->queue);
-            verify(pthread_mutex_unlock(&act_system->actors.arr[curr_actor]->mutex),
+            assert(!message_queue_is_empty(&curr_act_config->queue));
+            message = message_queue_pop(&curr_act_config->queue);
+            verify(pthread_mutex_unlock(&curr_act_config->mutex),
                    "mutex unlock failed");
 
             debug(printf("Thread %lu has started processing message of type %ld on actor %ld!\n",
@@ -211,19 +289,19 @@ static void* worker(__attribute__((unused)) void *data) {
 
             debug(printf("Thread %lu has processed message of type %ld on actor %ld!\n",
                     pthread_self() % 100, message.message_type,  curr_actor));
-            verify(pthread_mutex_lock(&act_system->actors.arr[curr_actor]->mutex),
+            verify(pthread_mutex_lock(&curr_act_config->mutex),
                    "mutex lock failed");
-            if (message_queue_is_empty(&act_system->actors.arr[curr_actor]->queue))
+            if (message_queue_is_empty(&curr_act_config->queue))
                 break;
         }
-        if (!message_queue_is_empty(&act_system->actors.arr[curr_actor]->queue)) {
+        if (!message_queue_is_empty(&curr_act_config->queue)) {
             verify(pthread_mutex_lock(&act_system->mutex), "mutex lock failed");
             assert(!actors_queue_is_full(&act_system->act_queue));
             actors_queue_push(&act_system->act_queue, curr_actor);
             verify(pthread_mutex_unlock(&act_system->mutex), "mutex unlock failed");
         }
-        act_system->actors.arr[curr_actor]->worked_at = false;
-        verify(pthread_mutex_unlock(&act_system->actors.arr[curr_actor]->mutex),
+        curr_act_config->worked_at = false;
+        verify(pthread_mutex_unlock(&curr_act_config->mutex),
                "mutex unlock failed");
     }
     verify(pthread_mutex_lock(&act_system->mutex), "mutex lock failed");
@@ -308,11 +386,15 @@ int actor_system_create(actor_id_t *actor, role_t *const role) {
 
 void actor_system_join(actor_id_t actor) {
     int err;
+    pthread_t pool_copy[POOL_SIZE];
     if (act_system == NULL)
         return;
     if (actor >= 0 && actor < (actor_id_t)act_system->actors.size) {
+        for (size_t i = 0; i < POOL_SIZE; ++i) {
+            pool_copy[i] = act_system->pool[i];
+        }
         for (size_t i = 0; i < POOL_SIZE; ++i)
-            verify(pthread_join(act_system->pool[i], NULL), "join failed");
+            verify(pthread_join(pool_copy[i], NULL), "join failed");
         actor_system_destroy();
     }
 }
@@ -321,17 +403,22 @@ int send_message(actor_id_t actor, message_t message) {
     int err;
     if (actor >= (actor_id_t)act_system->actors.size)
         return -2;
+    act_state_arr_acquire(&act_system->actors, false);
     if (act_system->actors.arr[actor]->gone_die)
         return -1;
 
     debug(printf("Sending message of type %li to actor %li...\n", message.message_type, actor));
+
     verify(pthread_mutex_lock(&act_system->actors.arr[actor]->mutex), "mutex lock failed");
     bool was_empty = !act_system->actors.arr[actor]->worked_at &&
             message_queue_is_empty(&act_system->actors.arr[actor]->queue);
 
     assert(!message_queue_is_full(&act_system->actors.arr[actor].queue));
     message_queue_push(&act_system->actors.arr[actor]->queue, message);
+
     verify(pthread_mutex_unlock(&act_system->actors.arr[actor]->mutex), "mutex unlock failed");
+    act_state_arr_release(&act_system->actors, false);
+
     debug(printf("Sent message to actor %li.\n", actor));
 
     if (was_empty) {
@@ -342,7 +429,9 @@ int send_message(actor_id_t actor, message_t message) {
         actors_queue_push(&act_system->act_queue, actor);
 //        debug(printf("Actors queue after push: beg: %lu, end: %lu, size: %lu, cap: %lu\n", act_system->act_queue.beg,
 //                act_system->act_queue.end, act_system->act_queue.size, act_system->act_queue.capacity));
+
         debug(printf("Pushed actor %li to actors queue.\n", actor));
+
         verify(pthread_cond_signal(&act_system->new_request), "cond signal failed");
         verify(pthread_mutex_unlock(&act_system->mutex), "mutex unlock failed");
     }
