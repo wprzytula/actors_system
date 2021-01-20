@@ -71,7 +71,7 @@ static int act_state_arr_emplace(act_state_arr *const arr, role_t *const role, a
     assert(arr->size < CAST_LIMIT);
     if (arr->capacity == arr->size) {
         arr->capacity *= 2;
-        // HERE WE GO - we act as a privileged Writer in Readers & Writers problem
+        // Here we act as a privileged Writer in Readers & Writers model
         if ((arr->arr = realloc(arr->arr, sizeof(act_state_t) * arr->capacity)) == NULL)
             fatal("realloc failed");
     }
