@@ -17,7 +17,7 @@ void compute(fact_t **stateptr, size_t nbytes, fact_t *data);
 void pass(void **stateptr, size_t nbytes, void *data);
 
 role_t role;
-act_t prompts[3] = {hello, (act_t)compute, pass};
+act_t prompts[] = {hello, (act_t)compute, pass};
 
 void hello(__attribute__((unused)) void **stateptr,
         __attribute__((unused)) size_t nbytes, void *data) {
@@ -30,12 +30,14 @@ void compute(fact_t **stateptr, __attribute__((unused)) size_t nbytes, fact_t *d
     *stateptr = malloc(sizeof(fact_t));
     if (!*stateptr)
         fatal("malloc failed");
+
     (*stateptr)->n = data->n;
     (*stateptr)->k = data->k + 1;
     (*stateptr)->k_fact = data->k_fact * (*stateptr)->k;
     free(data);
     debug(printf("Factorial computed in actor %ld is %lld\n", actor_id_self(),
             (*stateptr)->k_fact));
+
     if ((*stateptr)->k == (*stateptr)->n) {
         // print and clean
         printf("%lld\n", (*stateptr)->k_fact);
@@ -50,6 +52,7 @@ void compute(fact_t **stateptr, __attribute__((unused)) size_t nbytes, fact_t *d
 void pass(void **stateptr, __attribute__((unused)) size_t nbytes, void *data) {
     send_message((actor_id_t)data, (message_t)
             {.message_type = MSG_COMP, .nbytes = sizeof(fact_t), .data = *stateptr});
+
     send_message(actor_id_self(), (message_t){.message_type = MSG_GODIE});
 }
 
