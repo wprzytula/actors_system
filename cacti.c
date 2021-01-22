@@ -419,7 +419,7 @@ int send_message(actor_id_t actor, message_t message) {
     bool was_empty = !act_system->actors.arr[actor]->worked_at &&
             message_queue_is_empty(&act_system->actors.arr[actor]->queue);
 
-    assert(!message_queue_is_full(&act_system->actors.arr[actor].queue));
+    assert(!message_queue_is_full(&act_system->actors.arr[actor]->queue));
     message_queue_push(&act_system->actors.arr[actor]->queue, message);
 
     mutex_unlock(&act_system->actors.arr[actor]->mutex);
