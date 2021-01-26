@@ -1,5 +1,4 @@
 #include <string.h>
-#include <errno.h>
 #include "queue.dec"
 #include "err.h"
 
@@ -28,10 +27,6 @@ void CONCAT(PREFIX_, _queue_push)(QUEUE_TYPE_ *const q, TYPE_ elem) {
         if (q->buffer == NULL)
             fatal("realloc failed");
 
-        // TODO: should it work anyhow???
-//        for (size_t i = 0; i < q->beg; ++i) {
-//            q->buffer[q->capacity / 2 + i] = q->buffer[i];
-//        }
         memcpy(q->buffer + q->capacity / 2, q->buffer, q->beg * sizeof(TYPE_));
         q->end = (q->beg + q->size) % q->capacity;
     }

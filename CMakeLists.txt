@@ -3,7 +3,7 @@ project (CACTI)
 
 enable_testing()
 
-set(CMAKE_C_FLAGS "-g -Wall -Wextra -std=gnu11 -pthread -DPOOL_SIZE=3 -DNDEBUG")
+set(CMAKE_C_FLAGS "-g -Wall -Wextra -std=gnu11 -pthread -DNDEBUG")
 
 # http://stackoverflow.com/questions/10555706/
 macro (add_executable _name)
@@ -17,6 +17,8 @@ endmacro()
 add_library(cacti STATIC cacti.c err.c message_queue.c actors_queue.c)
 add_executable(macierz macierz.c)
 add_executable(silnia silnia.c)
+add_executable(macierz_seq macierz.c)
+set_target_properties(macierz_seq PROPERTIES COMPILE_FLAGS "-DPOOL_SIZE=1")
 add_subdirectory(test)
 
 install(TARGETS cacti DESTINATION .)
