@@ -21,7 +21,7 @@
 
 /* Actor state struct & operations */
 typedef struct {
-    int gone_die;
+    bool gone_die;
     bool worked_at;
     void *state;
     actor_id_t id;
@@ -31,7 +31,7 @@ typedef struct {
 } act_state_t;
 
 static int act_state_init(act_state_t *const state, role_t *const role, actor_id_t new_id) {
-    assert(role);
+    assert(state && role);
     if (pthread_mutex_init(&state->mutex, NULL) != 0)
         return -1;
     if (message_queue_init(&state->queue, ACTOR_QUEUE_LIMIT) != 0) {
@@ -48,7 +48,7 @@ static int act_state_init(act_state_t *const state, role_t *const role, actor_id
 
 static void act_state_destroy(act_state_t *const state) {
     int err;
-    verify(pthread_mutex_destroy(&state->mutex),"mutex destruction failed.");
+    mutex_destroy(&state->mutex);
     message_queue_destroy(&state->queue);
 }
 
@@ -57,9 +57,7 @@ typedef struct {
     size_t capacity;
     size_t size;
     act_state_t **arr; // array of malloc'd pointers
-
-    // provides safety for realloc operation
-    pthread_rwlock_t rwlock;
+    pthread_rwlock_t rwlock; // ensures safety of realloc operation
 } act_state_arr;
 
 static int act_state_arr_init(act_state_arr *const arr) {
@@ -148,8 +146,8 @@ static void spawn_actor(actor_id_t *const new_actor, role_t *const role) {
 
 static void process_message(actor_id_t actor, message_t msg) {
     int err;
-    switch (msg.message_type) {
 
+    switch (msg.message_type) {
         case MSG_SPAWN: {
             actor_id_t new_actor;
             if (act_system->interrupted)
@@ -190,7 +188,6 @@ static void process_message(actor_id_t actor, message_t msg) {
 
             target->role.prompts[msg.message_type]
                 (&target->state, msg.nbytes, msg.data);
-
         }
     }
 }
@@ -252,7 +249,7 @@ static void* worker(__attribute__((unused)) void *data) {
         mutex_lock(&curr_act_config->mutex);
         curr_act_config->worked_at = true;
 
-        // loop in order to reduce resource waste on context switch
+        // Loop in order to reduce resource waste on actor switch.
         for (size_t i = 0; i < MAX_MESSAGES_PROCESSED_IN_ONE_ITERATION; ++i) {
             assert(!message_queue_is_empty(&curr_act_config->queue));
             message = message_queue_pop(&curr_act_config->queue);
@@ -265,8 +262,9 @@ static void* worker(__attribute__((unused)) void *data) {
             debug(printf("Thread %lu has processed message of type %ld on actor %ld!\n",
                     pthread_self() % 100, message.message_type,  curr_actor));
             mutex_lock(&curr_act_config->mutex);
+
             if (message_queue_is_empty(&curr_act_config->queue))
-                break;
+                break; // There is nothing to do here in current actor.
         }
         if (!message_queue_is_empty(&curr_act_config->queue)) {
             mutex_lock(&act_system->mutex);
@@ -297,18 +295,20 @@ static void interrupt() {
     int err;
     debug(fputs("Interrupted!", stderr));
     act_system->interrupted = true;
+
     rwlock_wrlock(&act_system->actors.rwlock);
     for (size_t i = 0; i < act_system->actors.size; ++i) {
         act_system->actors.arr[i]->gone_die = true;
     }
     rwlock_unlock(&act_system->actors.rwlock);
+
     mutex_lock(&act_system->mutex);
     act_system->alive_actors = 0;
     cond_broadcast(&act_system->new_request);
     mutex_unlock(&act_system->mutex);
 }
 
-int actor_system_create(actor_id_t *actor, role_t *const role) {
+int actor_system_create(actor_id_t *leader, role_t *const role) {
     int err;
     if (act_system != NULL)
         return -1;
@@ -327,7 +327,7 @@ int actor_system_create(actor_id_t *actor, role_t *const role) {
 
     act_system->alive_actors = 1;
     act_system->interrupted = false;
-    *actor = 0;
+    *leader = 0;
     debug(puts("System created!"));
 
     // Setting up signal handling
@@ -412,7 +412,8 @@ int send_message(actor_id_t actor, message_t message) {
 
     debug(printf("Sent message to actor %li.\n", actor));
 
-    // If the actor queue was empty, it is required to push the actor id to actors queue.
+    // If the actor queue was empty, it is required to push the actor id
+    // to the actors queue and notify one worker thread.
     if (was_empty) {
         mutex_lock(&act_system->mutex);
         assert(!actors_queue_is_full(&act_system->act_queue));
