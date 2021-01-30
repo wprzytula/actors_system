@@ -34,7 +34,7 @@ do { \
 #define cond_wait(cond, mutex) verify(pthread_cond_wait(cond, mutex), "cond wait failed")
 #define cond_signal(cond) verify(pthread_cond_signal(cond), "cond signal failed")
 #define cond_broadcast(cond) verify(pthread_cond_broadcast(cond), "cond broadcast failed")
-#define cond_destroy(mutex) verify(pthread_cond_destroy(mutex), "cond destroy failed")
+#define cond_destroy(cond) verify(pthread_cond_destroy(cond), "cond destroy failed")
 
 #define rwlock_wrlock(rwlock) verify(pthread_rwlock_wrlock(rwlock), "rwlock writer lock failed")
 #define rwlock_rdlock(rwlock) verify(pthread_rwlock_rdlock(rwlock), "rwlock reader lock failed")

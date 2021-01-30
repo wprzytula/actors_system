@@ -13,7 +13,10 @@
 #include <stdio.h>
 #endif
 
+/* Defines the maximal number of messages that one thread may process on an actor
+ * before returning to actors queue. */
 #define MAX_MESSAGES_PROCESSED_IN_ONE_ITERATION 1
+
 #define INITIAL_ACTOR_ARR_CAPACITY 8
 
 /* Actor state struct & operations */
@@ -128,12 +131,12 @@ struct actor_system *act_system = NULL;
 /* Used to support actor_id_self() */
 _Thread_local actor_id_t curr_actor;
 
+/* Must be called with actor system mutex locked */
 static void spawn_actor(actor_id_t *const new_actor, role_t *const role) {
     int err;
     if (act_system->actors.size == CAST_LIMIT)
         fatal("Maximum number of actors exceeded");
 
-    mutex_lock(&act_system->mutex);
     *new_actor = act_system->actors.size;
     ++act_system->alive_actors;
     mutex_unlock(&act_system->mutex);
@@ -143,40 +146,52 @@ static void spawn_actor(actor_id_t *const new_actor, role_t *const role) {
     debug(printf("Spawned new actor %li.\n", *new_actor));
 }
 
-static void process_message(actor_id_t actor, message_t message) {
+static void process_message(actor_id_t actor, message_t msg) {
     int err;
-    actor_id_t new_actor;
-    switch (message.message_type) {
+    switch (msg.message_type) {
 
-        case MSG_SPAWN:
+        case MSG_SPAWN: {
+            actor_id_t new_actor;
             if (act_system->interrupted)
                 break;
-            spawn_actor(&new_actor, (role_t*)message.data);
-            send_message(new_actor, (message_t){.message_type = MSG_HELLO,
-                    .nbytes = sizeof(actor_id_t),
-                    .data = (void*)actor});
+            mutex_lock(&act_system->mutex);
+            if (act_system->actors.size == CAST_LIMIT) {
+                mutex_unlock(&act_system->mutex);
+            } else {
+                spawn_actor(&new_actor, (role_t *) msg.data);
+                send_message(new_actor, (message_t) {.message_type = MSG_HELLO,
+                        .nbytes = sizeof(actor_id_t),
+                        .data = (void *) actor});
+            }
+        }
             break;
 
-        case MSG_GODIE:
+        case MSG_GODIE: {
             rwlock_rdlock(&act_system->actors.rwlock);
-            act_system->actors.arr[actor]->gone_die = true;
+            act_state_t *target = act_system->actors.arr[actor];
             rwlock_unlock(&act_system->actors.rwlock);
 
-            mutex_lock(&act_system->mutex);
-            --act_system->alive_actors;
-            mutex_unlock(&act_system->mutex);
+            if (!target->gone_die) {
+                target->gone_die = true;
+                mutex_lock(&act_system->mutex);
+                --act_system->alive_actors;
+                mutex_unlock(&act_system->mutex);
+            }
+        }
             break;
 
-        default:
+        default: {
             rwlock_rdlock(&act_system->actors.rwlock);
+            act_state_t *target = act_system->actors.arr[actor];
+            rwlock_unlock(&act_system->actors.rwlock);
 
-            if (message.message_type >= (message_type_t)(act_system->actors.arr[actor]->role.nprompts))
+            if (msg.message_type >= (message_type_t)(target->role.nprompts))
                 fatal("Requested message number not present in actor's control array.");
 
-            act_system->actors.arr[actor]->role.prompts[message.message_type]
-                    (&act_system->actors.arr[actor]->state, message.nbytes, message.data);
+            target->role.prompts[msg.message_type]
+                (&target->state, msg.nbytes, msg.data);
 
-            rwlock_unlock(&act_system->actors.rwlock);
+        }
     }
 }
 
@@ -264,10 +279,12 @@ static void* worker(__attribute__((unused)) void *data) {
     }
     mutex_lock(&act_system->mutex);
     --act_system->alive_threads;
-    if (act_system->interrupted && act_system->alive_threads == 0) {
+    if (act_system->alive_threads == 0) {
+        bool interrupted = act_system->interrupted;
         mutex_unlock(&act_system->mutex);
         actor_system_destroy();
-        raise(SIGINT);
+        if (interrupted)
+            raise(SIGINT);
     } else
         mutex_unlock(&act_system->mutex);
 
@@ -280,11 +297,13 @@ static void interrupt() {
     int err;
     debug(fputs("Interrupted!", stderr));
     act_system->interrupted = true;
-    act_system->alive_actors = 0;
+    rwlock_wrlock(&act_system->actors.rwlock);
     for (size_t i = 0; i < act_system->actors.size; ++i) {
         act_system->actors.arr[i]->gone_die = true;
     }
+    rwlock_unlock(&act_system->actors.rwlock);
     mutex_lock(&act_system->mutex);
+    act_system->alive_actors = 0;
     cond_broadcast(&act_system->new_request);
     mutex_unlock(&act_system->mutex);
 }
@@ -317,7 +336,7 @@ int actor_system_create(actor_id_t *actor, role_t *const role) {
     sigemptyset(&block_mask);
     sigact.sa_handler = interrupt;
     sigact.sa_mask = block_mask;
-    sigact.sa_flags = 0;
+    sigact.sa_flags = SA_RESTART;
     sigaction(SIGINT, &sigact, &act_system->old_sigact);
 
     // Starting threads
@@ -351,41 +370,49 @@ actor_id_t actor_id_self() {
 void actor_system_join(actor_id_t actor) {
     int err;
     pthread_t pool_copy[POOL_SIZE];
+
     if (act_system == NULL)
         return;
+
     if (actor >= 0 && actor < (actor_id_t)act_system->actors.size) {
+        // Copying pool array data in order to avoid segmentation fault in case of SIGINT.
         for (size_t i = 0; i < POOL_SIZE; ++i) {
             pool_copy[i] = act_system->pool[i];
         }
+
+        // Waiting for each thread in pool to finish.
         for (size_t i = 0; i < POOL_SIZE; ++i)
             verify(pthread_join(pool_copy[i], NULL), "join failed");
-        actor_system_destroy();
     }
 }
 
 int send_message(actor_id_t actor, message_t message) {
     int err;
     if (actor >= (actor_id_t)act_system->actors.size)
-        return -2;
+        return -2; // no such target
 
+    // Fetching pointer to target actor
     rwlock_rdlock(&act_system->actors.rwlock);
-    if (act_system->actors.arr[actor]->gone_die)
-        return -1;
+    act_state_t *target = act_system->actors.arr[actor];
+    rwlock_unlock(&act_system->actors.rwlock);
+
+    if (target->gone_die)
+        return -1; // target does not accept new messages
 
     debug(printf("Sending message of type %li to actor %li...\n", message.message_type, actor));
 
-    mutex_lock(&act_system->actors.arr[actor]->mutex);
-    bool was_empty = !act_system->actors.arr[actor]->worked_at &&
-            message_queue_is_empty(&act_system->actors.arr[actor]->queue);
+    mutex_lock(&target->mutex);
+    bool was_empty = !target->worked_at &&
+            message_queue_is_empty(&target->queue);
 
-    assert(!message_queue_is_full(&act_system->actors.arr[actor]->queue));
-    message_queue_push(&act_system->actors.arr[actor]->queue, message);
+    assert(!message_queue_is_full(&target->queue));
+    message_queue_push(&target->queue, message);
 
-    mutex_unlock(&act_system->actors.arr[actor]->mutex);
-    rwlock_unlock(&act_system->actors.rwlock);
+    mutex_unlock(&target->mutex);
 
     debug(printf("Sent message to actor %li.\n", actor));
 
+    // If the actor queue was empty, it is required to push the actor id to actors queue.
     if (was_empty) {
         mutex_lock(&act_system->mutex);
         assert(!actors_queue_is_full(&act_system->act_queue));

@@ -19,14 +19,14 @@
 /* Message act_queue struct & operations */
 typedef struct {
     size_t size, capacity, beg, end, max_size;
+    pthread_mutex_t mutex;
+    pthread_cond_t free_slot;
     TYPE_ *buffer;
 } QUEUE_TYPE_;
 
 int CONCAT(PREFIX_, _queue_init)(QUEUE_TYPE_ *const q, size_t max_size);
 
-static inline void CONCAT(PREFIX_, _queue_destroy)(QUEUE_TYPE_ *const q) {
-    free(q->buffer);
-}
+void CONCAT(PREFIX_, _queue_destroy)(QUEUE_TYPE_ *const q);
 
 static inline bool CONCAT(PREFIX_, _queue_is_empty)(QUEUE_TYPE_ const *const q) {
     return q->size == 0;
