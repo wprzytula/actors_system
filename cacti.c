@@ -56,11 +56,7 @@ typedef struct {
     act_state_t **arr; // array of malloc'd pointers
 
     // provides safety for realloc operation
-    bool realloc_needed;
-    size_t readers_inside_num;
-    pthread_mutex_t mutex;
-    pthread_cond_t readers_left;
-    pthread_cond_t realloc_done;
+    pthread_rwlock_t rwlock;
 } act_state_arr;
 
 static int act_state_arr_init(act_state_arr *const arr) {
@@ -70,84 +66,46 @@ static int act_state_arr_init(act_state_arr *const arr) {
     arr->arr = malloc(arr->capacity * sizeof(act_state_t*));
     if (arr->arr == NULL)
         return 1;
-    arr->readers_inside_num = 0;
-    arr->realloc_needed = false;
-    if (pthread_mutex_init(&arr->mutex, NULL) != 0) {
+
+    if (pthread_rwlock_init(&arr->rwlock, NULL) != 0) {
         free(arr->arr);
         return -1;
     }
-    if (pthread_cond_init(&arr->readers_left, NULL) != 0) {
-        pthread_mutex_destroy(&arr->mutex);
-        free(arr->arr);
-        return -1;
-    }
-    if (pthread_cond_init(&arr->realloc_done, NULL) != 0) {
-        pthread_cond_destroy(&arr->readers_left);
-        pthread_mutex_destroy(&arr->mutex);
-        free(arr->arr);
-        return -1;
-    }
+
     return 0;
-}
-
-static void act_state_arr_acquire(act_state_arr *const arr, bool as_writer) {
-    int err;
-    mutex_lock(&arr->mutex);
-    if (as_writer) {
-        arr->realloc_needed = true;
-        while (arr->readers_inside_num > 0) {
-            cond_wait(&arr->readers_left, &arr->mutex);
-        }
-    } else {
-        while (arr->realloc_needed) {
-            cond_wait(&arr->realloc_done, &arr->mutex);
-        }
-        ++arr->readers_inside_num;
-    }
-    mutex_unlock(&arr->mutex);
-}
-
-static void act_state_arr_release(act_state_arr *const arr, bool as_writer) {
-    int err;
-    mutex_lock(&arr->mutex);
-    if (as_writer) {
-        arr->realloc_needed = false;
-        cond_broadcast(&arr->realloc_done);
-    } else {
-        --arr->readers_inside_num;
-        if (arr->readers_inside_num == 0)
-            cond_signal(&arr->readers_left);
-    }
-    mutex_unlock(&arr->mutex);
 }
 
 static int act_state_arr_emplace(act_state_arr *const arr, role_t *const role,
         actor_id_t new_id) {
+    int err;
     assert(arr && role);
     assert(arr->size < CAST_LIMIT);
+
+    rwlock_wrlock(&arr->rwlock);
+
     if (arr->capacity == arr->size) {
         arr->capacity *= 2;
-        // Here we act as a privileged Writer in Readers & Writers model
-        act_state_arr_acquire(arr, true);
         if ((arr->arr = realloc(arr->arr, sizeof(act_state_t*) * arr->capacity)) == NULL)
             fatal("realloc failed");
-        act_state_arr_release(arr, true);
     }
-    act_state_arr_acquire(arr, false);
+
     arr->arr[arr->size] = malloc(sizeof(act_state_t));
     if (arr->arr[arr->size] == NULL)
         fatal("malloc failed");
     int res = act_state_init(arr->arr[arr->size++], role, new_id);
-    act_state_arr_release(arr, false);
+
+    rwlock_unlock(&arr->rwlock);
     return res;
 }
 
 static void act_state_arr_destroy(act_state_arr *const arr) {
+    int err;
     assert(arr);
     for (size_t i = 0; i < arr->size; ++i) {
         act_state_destroy(arr->arr[i]);
         free(arr->arr[i]);
     }
+    rwlock_destroy(&arr->rwlock);
     free(arr->arr);
 }
 
@@ -200,9 +158,9 @@ static void process_message(actor_id_t actor, message_t message) {
             break;
 
         case MSG_GODIE:
-            act_state_arr_acquire(&act_system->actors, false);
+            rwlock_rdlock(&act_system->actors.rwlock);
             act_system->actors.arr[actor]->gone_die = true;
-            act_state_arr_release(&act_system->actors, false);
+            rwlock_unlock(&act_system->actors.rwlock);
 
             mutex_lock(&act_system->mutex);
             --act_system->alive_actors;
@@ -210,7 +168,7 @@ static void process_message(actor_id_t actor, message_t message) {
             break;
 
         default:
-            act_state_arr_acquire(&act_system->actors, false);
+            rwlock_rdlock(&act_system->actors.rwlock);
 
             if (message.message_type >= (message_type_t)(act_system->actors.arr[actor]->role.nprompts))
                 fatal("Requested message number not present in actor's control array.");
@@ -218,7 +176,7 @@ static void process_message(actor_id_t actor, message_t message) {
             act_system->actors.arr[actor]->role.prompts[message.message_type]
                     (&act_system->actors.arr[actor]->state, message.nbytes, message.data);
 
-            act_state_arr_release(&act_system->actors, false);
+            rwlock_unlock(&act_system->actors.rwlock);
     }
 }
 
@@ -272,9 +230,9 @@ static void* worker(__attribute__((unused)) void *data) {
         // work on actor begins
         debug(printf("Thread %lu began working on actor %ld!\n",
                 pthread_self() % 100, curr_actor));
-        act_state_arr_acquire(&act_system->actors, false);
+        rwlock_rdlock(&act_system->actors.rwlock);
         curr_act_config = act_system->actors.arr[curr_actor];
-        act_state_arr_release(&act_system->actors, false);
+        rwlock_unlock(&act_system->actors.rwlock);
 
         mutex_lock(&curr_act_config->mutex);
         curr_act_config->worked_at = true;
@@ -410,7 +368,7 @@ int send_message(actor_id_t actor, message_t message) {
     if (actor >= (actor_id_t)act_system->actors.size)
         return -2;
 
-    act_state_arr_acquire(&act_system->actors, false);
+    rwlock_rdlock(&act_system->actors.rwlock);
     if (act_system->actors.arr[actor]->gone_die)
         return -1;
 
@@ -424,7 +382,7 @@ int send_message(actor_id_t actor, message_t message) {
     message_queue_push(&act_system->actors.arr[actor]->queue, message);
 
     mutex_unlock(&act_system->actors.arr[actor]->mutex);
-    act_state_arr_release(&act_system->actors, false);
+    rwlock_unlock(&act_system->actors.rwlock);
 
     debug(printf("Sent message to actor %li.\n", actor));
 

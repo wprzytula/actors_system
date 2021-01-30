@@ -22,7 +22,7 @@ struct state {
 
 struct rowsum {
     int curr_row;
-    int sum;
+    long long sum;
 };
 
 const int MSG_INTRO = 0x1;
@@ -38,8 +38,6 @@ void compute_row(struct state **stateptr, size_t nbytes, struct rowsum *data);
 
 act_t prompts[] = {(act_t)hello, (act_t)introduce, (act_t)assign, (act_t)ready, (act_t)compute_row};
 role_t role = {.nprompts = sizeof(prompts) / sizeof(act_t), .prompts = prompts};
-
-
 
 void hello(__attribute__((unused)) void **stateptr, __attribute__((unused)) size_t nbytes,
         void *data) {
@@ -104,7 +102,7 @@ void compute_row(struct state **stateptr, __attribute__((unused)) size_t nbytes,
             {.message_type = MSG_COMP, .nbytes = sizeof(struct rowsum),
                     .data = data});
     } else {
-        printf("%d\n", data->sum);
+        printf("%lld\n", data->sum);
         free_data = true;
     }
     if (data->curr_row + 1 == (*stateptr)->n) {
