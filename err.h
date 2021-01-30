@@ -1,3 +1,7 @@
+/*
+ * Based on MIM UW code (Concurrent Programming lab sample code)
+ * */
+
 #ifndef _ERR_
 #define _ERR_
 

@@ -1,3 +1,7 @@
+/*
+* Based on MIM UW code (Concurrent Programming lab sample code)
+* */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>

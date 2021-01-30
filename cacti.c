@@ -409,6 +409,7 @@ int send_message(actor_id_t actor, message_t message) {
     int err;
     if (actor >= (actor_id_t)act_system->actors.size)
         return -2;
+
     act_state_arr_acquire(&act_system->actors, false);
     if (act_system->actors.arr[actor]->gone_die)
         return -1;
@@ -430,11 +431,7 @@ int send_message(actor_id_t actor, message_t message) {
     if (was_empty) {
         mutex_lock(&act_system->mutex);
         assert(!actors_queue_is_full(&act_system->act_queue));
-//        debug(printf("Actors queue before push: beg: %lu, end: %lu, size: %lu, cap: %lu\n", act_system->act_queue.beg,
-//                act_system->act_queue.end, act_system->act_queue.size, act_system->act_queue.capacity));
         actors_queue_push(&act_system->act_queue, actor);
-//        debug(printf("Actors queue after push: beg: %lu, end: %lu, size: %lu, cap: %lu\n", act_system->act_queue.beg,
-//                act_system->act_queue.end, act_system->act_queue.size, act_system->act_queue.capacity));
 
         debug(printf("Pushed actor %li to actors queue.\n", actor));
 
