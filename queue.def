@@ -1,11 +1,13 @@
 #include <string.h>
 #include "queue.dec"
 #include "err.h"
+#include <pthread.h>
 
 #define SHRINK_FACTOR 4
 #define INITIAL_CAPACITY 8
 
 int CONCAT(PREFIX_, _queue_init)(QUEUE_TYPE_ *const q, size_t max_size) {
+    int err;
     q->capacity = INITIAL_CAPACITY;
     q->beg = 0;
     q->end = 0;
@@ -13,13 +15,33 @@ int CONCAT(PREFIX_, _queue_init)(QUEUE_TYPE_ *const q, size_t max_size) {
     q->max_size = max_size;
     q->buffer = malloc(sizeof(TYPE_) * q->capacity);
     if (q->buffer == NULL)
-        return -1;
+        goto MALLOC_FAILED;
+    if (pthread_mutex_init(&q->mutex, NULL) != 0)
+        goto MUTEX_INIT_FAILED;
+    if (pthread_cond_init(&q->free_slot, NULL) != 0)
+        goto FREE_SLOT_INIT_FAILED;
     return 0;
+
+    FREE_SLOT_INIT_FAILED:
+    mutex_destroy(&q->mutex);
+    MUTEX_INIT_FAILED:
+    free(q->buffer);
+    MALLOC_FAILED:
+    return -1;
+
+}
+
+void CONCAT(PREFIX_, _queue_destroy)(QUEUE_TYPE_ *const q) {
+    int err;
+    cond_destroy(&q->free_slot);
+    mutex_destroy(&q->mutex);
+    free(q->buffer);
 }
 
 void CONCAT(PREFIX_, _queue_push)(QUEUE_TYPE_ *const q, TYPE_ elem) {
-    if (q->size == q->max_size) {
-        fatal("maximum queue size reached");
+    int err;
+    while (q->size == q->max_size) {
+        cond_wait(&q->free_slot, &q->mutex);
     }
     if (q->size == q->capacity) {
         q->capacity *= 2;
@@ -36,6 +58,7 @@ void CONCAT(PREFIX_, _queue_push)(QUEUE_TYPE_ *const q, TYPE_ elem) {
 }
 
 TYPE_ CONCAT(PREFIX_, _queue_pop)(QUEUE_TYPE_ *const q) {
+    int err;
     if (CONCAT(PREFIX_, _queue_is_empty)(q))
         fatal("Attempted pop from an empty queue.");
 
@@ -43,11 +66,13 @@ TYPE_ CONCAT(PREFIX_, _queue_pop)(QUEUE_TYPE_ *const q) {
     q->beg = ((q->beg + 1) % q->capacity);
     --q->size;
     if (q->capacity > INITIAL_CAPACITY && q->size * SHRINK_FACTOR < q->capacity &&
-        q->beg * 2 < q->capacity && q->end * 2 < q->capacity) {
+        q->beg < q->capacity / 2 && q->end < q->capacity / 2) {
         q->capacity /= 2;
         q->buffer = realloc(q->buffer, sizeof(TYPE_) * q->capacity);
         if (q->buffer == NULL)
             fatal("realloc failed");
     }
+
+    cond_signal(&q->free_slot);
     return elem;
 }
