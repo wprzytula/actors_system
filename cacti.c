@@ -327,6 +327,7 @@ int actor_system_create(actor_id_t *leader, role_t *const role) {
 
     act_system->alive_actors = 1;
     act_system->interrupted = false;
+    act_system->alive_threads = POOL_SIZE;
     *leader = 0;
     debug(puts("System created!"));
 
